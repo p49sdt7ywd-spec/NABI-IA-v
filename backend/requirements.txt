@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+httpx
+aiofiles
+mlx-whisper
+ollama
+Pillow

@@ -12,6 +12,7 @@ interface ProjectCardProps {
   duration?: string;
   createdAt: string;
   progress?: number;
+  onDelete?: (id: string) => void;
 }
 
 const statusConfig: Record<ProjectStatus, { label: string; className: string }> = {
@@ -29,6 +30,7 @@ export default function ProjectCard({
   duration,
   createdAt,
   progress,
+  onDelete,
 }: ProjectCardProps) {
   const { label, className } = statusConfig[status];
 
@@ -61,6 +63,40 @@ export default function ProjectCard({
           </div>
 
           {duration && <div className="project-card-duration">{duration}</div>}
+
+          {/* Delete button */}
+          {onDelete && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (confirm('Supprimer ce projet ?')) onDelete(id);
+              }}
+              style={{
+                position: 'absolute',
+                top: 8,
+                right: 8,
+                width: 28,
+                height: 28,
+                borderRadius: '50%',
+                background: 'rgba(239, 68, 68, 0.85)',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 0,
+                transition: 'opacity 0.2s',
+                zIndex: 5,
+              }}
+              className="project-card-delete-btn"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
+          )}
         </div>
 
         <div className="project-card-body">
