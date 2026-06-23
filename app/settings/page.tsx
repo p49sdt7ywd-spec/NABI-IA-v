@@ -7,10 +7,9 @@ import { fetchSettings, saveSettings, type Settings } from '@/lib/api';
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings>({
     pexels_api_key: '',
-    replicate_api_key: '',
     ollama_model: 'qwen3:4b',
     whisper_model: 'mlx-community/whisper-large-v3-turbo',
-    image_mode: 'replicate',
+    motion_mode: 'hyperframes',
     output_resolution: '1080p',
     output_dir: '~/nabi-ai/projects',
     pip_enabled: 'true',
@@ -100,23 +99,6 @@ export default function SettingsPage() {
                 </a>
               </p>
             </div>
-
-            <div className="form-group">
-              <label className="form-label">Replicate API Key <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>(optionnel)</span></label>
-              <input
-                type="password"
-                className="form-input"
-                placeholder="Colle ta clé API Replicate ici..."
-                value={settings.replicate_api_key}
-                onChange={(e) => update('replicate_api_key', e.target.value)}
-              />
-              <p className="form-hint">
-                Nécessaire pour la génération d'images en mode API —{' '}
-                <a href="https://replicate.com/account/api-tokens" target="_blank" rel="noopener" style={{ color: 'var(--accent-violet-light)' }}>
-                  replicate.com
-                </a>
-              </p>
-            </div>
           </div>
 
           {/* AI Models */}
@@ -156,29 +138,36 @@ export default function SettingsPage() {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Mode génération d'images</label>
+              <label className="form-label">Mode Motion Design</label>
               <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
                 <button
-                  className={`btn ${settings.image_mode === 'replicate' ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => update('image_mode', 'replicate')}
+                  className={`btn ${settings.motion_mode === 'hyperframes' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => update('motion_mode', 'hyperframes')}
                   style={{ flex: 1 }}
                 >
-                  ☁️ Replicate API
+                  🎬 HyperFrames
                   <span style={{ fontSize: 'var(--text-xs)', opacity: 0.7, display: 'block', fontWeight: 400 }}>
-                    ~5s/image, ~$0.02
+                    Motion design animé (recommandé)
                   </span>
                 </button>
                 <button
-                  className={`btn ${settings.image_mode === 'local' ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => update('image_mode', 'local')}
+                  className={`btn ${settings.motion_mode === 'pillow' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => update('motion_mode', 'pillow')}
                   style={{ flex: 1 }}
                 >
-                  💻 FLUX Local
+                  🖼️ Pillow
                   <span style={{ fontSize: 'var(--text-xs)', opacity: 0.7, display: 'block', fontWeight: 400 }}>
-                    ~2-3min/image, gratuit
+                    Images statiques (fallback)
                   </span>
                 </button>
               </div>
+              <p className="form-hint">
+                HyperFrames crée des clips motion design animés (HTML/CSS/GSAP → MP4).
+                Nécessite Node.js 22+ —{' '}
+                <a href="https://hyperframes.heygen.com" target="_blank" rel="noopener" style={{ color: 'var(--accent-violet-light)' }}>
+                  hyperframes.heygen.com
+                </a>
+              </p>
             </div>
           </div>
 

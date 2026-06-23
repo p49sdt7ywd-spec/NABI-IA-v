@@ -337,10 +337,9 @@ async def get_settings():
     """Get all settings."""
     defaults = {
         "pexels_api_key": "",
-        "replicate_api_key": "",
         "ollama_model": "qwen3:4b",
         "whisper_model": "mlx-community/whisper-large-v3-turbo",
-        "image_mode": "replicate",
+        "motion_mode": "hyperframes",
         "output_resolution": "1080p",
         "output_dir": str(db.PROJECTS_DIR),
         "pip_enabled": "true",
@@ -381,20 +380,28 @@ async def health():
     except FileNotFoundError:
         pass
     
-    # Check API keys
+    # Check API keys / modes
     settings = db.get_all_settings()
     pexels_ok = bool(settings.get("pexels_api_key", ""))
-    replicate_ok = bool(settings.get("replicate_api_key", ""))
-    image_mode = settings.get("image_mode", "replicate")
+    motion_mode = settings.get("motion_mode", "hyperframes")
+    
+    # Check HyperFrames availability
+    hf_ok = False
+    try:
+        import subprocess
+        r = subprocess.run(["npx", "hyperframes", "--version"], capture_output=True, timeout=10)
+        hf_ok = r.returncode == 0
+    except Exception:
+        pass
     
     return {
         "status": "ok",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "ffmpeg": ffmpeg_ok,
         "ollama": ollama_ok,
         "pexels_api_key": pexels_ok,
-        "replicate_api_key": replicate_ok,
-        "image_mode": image_mode,
+        "motion_mode": motion_mode,
+        "hyperframes": hf_ok,
         "projects_dir": str(db.PROJECTS_DIR),
     }
 

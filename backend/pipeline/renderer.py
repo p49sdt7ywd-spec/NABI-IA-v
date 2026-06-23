@@ -57,7 +57,18 @@ async def render(
     width, height = res_map.get(resolution, (1920, 1080))
 
     # Build asset lookup maps
-    image_map = {r["segment_index"]: r for r in images if r.get("image_path") and os.path.exists(r["image_path"])}
+    # Motion clips may have video_path (HyperFrames MP4) or image_path (Pillow fallback)
+    image_map = {}
+    motion_video_map = {}
+    for r in images:
+        idx = r.get("segment_index")
+        if idx is None:
+            continue
+        if r.get("video_path") and os.path.exists(r["video_path"]) and r["video_path"].endswith(".mp4"):
+            motion_video_map[idx] = r  # HyperFrames MP4 clip
+        elif r.get("image_path") and os.path.exists(r["image_path"]):
+            image_map[idx] = r  # Pillow static image
+
     broll_map = {r["segment_index"]: r for r in brolls if r.get("video_path") and os.path.exists(r["video_path"])}
 
     segments = edl.get("segments", [])
@@ -99,10 +110,18 @@ async def render(
                     ffmpeg, source_video, broll_path, output_seg,
                     start, duration, width, height, has_pip,
                 )
-            elif seg_type == "ai_image" and i in image_map:
-                image_path = image_map[i]["image_path"]
+            elif seg_type in ("ai_image", "motion_design") and i in motion_video_map:
+                # Motion design MP4 clip — treat as video overlay (like B-roll)
+                clip_path = motion_video_map[i]["video_path"]
+                await _render_broll(
+                    ffmpeg, source_video, clip_path, output_seg,
+                    start, duration, width, height, has_pip,
+                )
+            elif seg_type in ("ai_image", "motion_design") and i in image_map:
+                # Static image fallback (Pillow)
+                img_path = image_map[i]["image_path"]
                 await _render_image(
-                    ffmpeg, source_video, image_path, output_seg,
+                    ffmpeg, source_video, img_path, output_seg,
                     start, duration, width, height, has_pip,
                 )
             else:

@@ -30,8 +30,8 @@ export interface HealthStatus {
   ffmpeg: boolean;
   ollama: boolean;
   pexels_api_key: boolean;
-  replicate_api_key: boolean;
-  image_mode: string;
+  motion_mode: string;
+  hyperframes: boolean;
   projects_dir: string;
 }
 
@@ -59,10 +59,9 @@ export interface ProgressUpdate {
 
 export interface Settings {
   pexels_api_key: string;
-  replicate_api_key: string;
   ollama_model: string;
   whisper_model: string;
-  image_mode: 'replicate' | 'local';
+  motion_mode: 'hyperframes' | 'pillow';
   output_resolution: string;
   output_dir: string;
   pip_enabled: string;

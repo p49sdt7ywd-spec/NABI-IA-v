@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-from pipeline import transcriber, analyzer, image_generator, broll_sourcer, renderer
+from pipeline import transcriber, analyzer, motion_design, broll_sourcer, renderer
 
 
 async def run_full_pipeline(
@@ -53,8 +53,7 @@ async def run_full_pipeline(
     # Extract settings
     whisper_model = settings.get("whisper_model", "mlx-community/whisper-large-v3-turbo")
     ollama_model = settings.get("ollama_model", "qwen3:4b")
-    image_mode = settings.get("image_mode", "replicate")
-    replicate_api_key = settings.get("replicate_api_key", "")
+    motion_mode = settings.get("motion_mode", "hyperframes")
     pexels_api_key = settings.get("pexels_api_key", "")
     output_resolution = settings.get("output_resolution", "1080p")
     pip_enabled = settings.get("pip_enabled", "true") == "true"
@@ -90,21 +89,20 @@ async def run_full_pipeline(
     total_segs = len(edl.get("segments", []))
     total_brolls = edl.get("total_brolls", 0)
     total_images = edl.get("total_ai_images", 0)
-    print(f"📋 EDL: {total_segs} segments, {total_brolls} B-rolls, {total_images} AI images")
+    print(f"📋 EDL: {total_segs} segments, {total_brolls} B-rolls, {total_images} motion design")
 
-    # ── Stage 3: Image Generation ──────────────
+    # ── Stage 3: Motion Design (HyperFrames) ──
     if on_progress:
-        await on_progress("images", 0, "Génération des images IA...")
+        await on_progress("images", 0, "Création des clips motion design...")
 
-    images = await image_generator.generate_images(
+    motion_clips = await motion_design.generate_motion_clips(
         edl=edl,
         project_dir=project_dir,
         transcription=transcription,
-        mode=image_mode,
-        replicate_api_key=replicate_api_key,
+        mode=motion_mode,
         on_progress=on_progress,
     )
-    results["images"] = images
+    results["images"] = motion_clips
     results["stages_completed"].append("images")
 
     # ── Stage 4: B-Roll Sourcing ───────────────
@@ -127,7 +125,7 @@ async def run_full_pipeline(
     output_path = await renderer.render(
         edl=edl,
         project_dir=project_dir,
-        images=images,
+        images=motion_clips,
         brolls=brolls,
         source_video=video_path,
         resolution=output_resolution,
