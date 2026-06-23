@@ -62,6 +62,10 @@ export interface Settings {
   ollama_model: string;
   whisper_model: string;
   motion_mode: 'hyperframes' | 'pillow';
+  da_primary: string;
+  da_secondary: string;
+  da_background: string;
+  da_accent_2: string;
   output_resolution: string;
   output_dir: string;
   pip_enabled: string;

@@ -95,12 +95,25 @@ async def run_full_pipeline(
     if on_progress:
         await on_progress("images", 0, "Création des clips motion design...")
 
+    # DA colors from settings
+    da_colors = {
+        "primary": settings.get("da_primary", "#FF7820"),
+        "secondary": settings.get("da_secondary", "#1E1E28"),
+        "background": settings.get("da_background", "#FFFFFF"),
+        "surface": "#F8F8FC",
+        "text_primary": settings.get("da_secondary", "#1E1E28"),
+        "text_secondary": "#6E6E78",
+        "accent_2": settings.get("da_accent_2", "#326FA8"),
+        "font_family": "Inter",
+    }
+
     motion_clips = await motion_design.generate_motion_clips(
         edl=edl,
         project_dir=project_dir,
         transcription=transcription,
         mode=motion_mode,
         on_progress=on_progress,
+        da_colors=da_colors,
     )
     results["images"] = motion_clips
     results["stages_completed"].append("images")

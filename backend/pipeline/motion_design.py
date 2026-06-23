@@ -1,316 +1,113 @@
 """
-Nabi AI — Motion Design Generator (HyperFrames)
-Generates animated HTML/CSS/JS compositions rendered to MP4 clips via HyperFrames.
+Nabi AI — Motion Design Generator via HyperFrames
+Generates animated motion design clips using LLM + HyperFrames.
 
-Instead of static AI images, this module creates motion design clips that:
-  - Are adapted to the exact transcript content at each timestamp
-  - Use GSAP animations (fade-in, slide-up, counters)
-  - Follow the editorial style: white bg, black text, orange accents
-  - Are rendered to 1920x1080 MP4 at 30fps
+Flow:
+  1. Ollama (LLM orchestrateur) generates HyperFrames-compatible HTML compositions
+     based on the transcript content and DA color palette
+  2. HyperFrames CLI renders each HTML to MP4
+  3. The clips are overlaid in the final video as motion design segments
 
-Modes:
-  - hyperframes: Full animated clips via HyperFrames CLI (requires Node.js 22+)
-  - pillow: Fallback static images when HyperFrames is not available
+The LLM is guided by a system prompt containing:
+  - HyperFrames HTML schema (data attributes, GSAP timelines)
+  - Example patterns from the catalog (data-chart, flowchart, etc.)
+  - The user's DA color palette
+  - The exact transcript text to illustrate
 """
 
 import asyncio
 import json
 import os
-import shutil
 import subprocess
-import textwrap
 import time
 from pathlib import Path
 from typing import Optional
 
+import httpx
 
-# ── HTML Template for Motion Design ──
-# Each clip is a self-contained HTML file with GSAP animations.
-# HyperFrames renders it frame-by-frame to produce a deterministic MP4.
+OLLAMA_URL = "http://localhost:11434"
 
-MOTION_HTML_TEMPLATE = """\
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
+# ── Default DA (Direction Artistique) ──
+DEFAULT_DA = {
+    "primary": "#FF7820",       # Orange accent
+    "secondary": "#1E1E28",     # Dark text
+    "background": "#FFFFFF",    # White background
+    "surface": "#F8F8FC",       # Light gray cards
+    "text_primary": "#1E1E28",  # Main text
+    "text_secondary": "#6E6E78",# Secondary text
+    "accent_2": "#326FA8",      # Blue accent for data/lines
+    "font_family": "Inter",
+}
 
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+# ── System Prompt for Ollama ──
+# This teaches the LLM how to write HyperFrames HTML compositions.
 
-    body {{
-      width: 1920px;
-      height: 1080px;
-      overflow: hidden;
-      background: #FFFFFF;
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      color: #1E1E28;
-    }}
+MOTION_DESIGN_SYSTEM_PROMPT = """Tu es un motion designer expert qui génère des compositions HTML animées pour HyperFrames.
 
-    .stage {{
-      width: 1920px;
-      height: 1080px;
-      position: relative;
-      overflow: hidden;
-    }}
+HyperFrames rend du HTML/CSS/JS animé en vidéo MP4. Tu dois générer du HTML valide qui suit ces règles :
 
-    /* Top orange accent bar */
-    .top-bar {{
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 6px;
-      background: #FF7820;
-      transform-origin: left;
-    }}
+═══ STRUCTURE HYPERFRAMES ═══
 
-    /* Left accent stripe */
-    .left-stripe {{
-      position: absolute;
-      top: 0; left: 0; bottom: 0;
-      width: 6px;
-      background: #FF7820;
-      transform-origin: top;
-    }}
+1. L'élément racine DOIT avoir ces attributs :
+   - data-composition-id="motion-{index}"
+   - data-width="1920"
+   - data-height="1080" 
+   - data-start="0"
+   - data-duration="{duration}"
 
-    /* Bottom bar */
-    .bottom-bar {{
-      position: absolute;
-      bottom: 0; left: 0; right: 0;
-      height: 6px;
-      background: #FF7820;
-      transform-origin: right;
-    }}
+2. Utilise GSAP pour les animations. Inclus le CDN :
+   <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
 
-    /* Header section */
-    .header {{
-      position: absolute;
-      top: 60px;
-      left: 80px;
-      right: 80px;
-      display: flex;
-      align-items: flex-start;
-      gap: 24px;
-    }}
+3. La timeline GSAP DOIT être enregistrée comme :
+   window.__timelines = window.__timelines || {};
+   window.__timelines["motion-{index}"] = tl;
 
-    .icon-circle {{
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: #FF7820;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 24px;
-      flex-shrink: 0;
-    }}
+4. Crée la timeline en mode paused : gsap.timeline({ paused: true })
 
-    .headline {{
-      font-size: 48px;
-      font-weight: 800;
-      line-height: 1.2;
-      letter-spacing: -0.02em;
-      color: #1E1E28;
-    }}
+═══ TYPES DE COMPOSITIONS ═══
 
-    .headline .highlight {{
-      color: #FF7820;
-    }}
+Choisis le type de composition le plus adapté au contenu :
 
-    /* Divider */
-    .divider {{
-      position: absolute;
-      top: 210px;
-      left: 80px;
-      right: 80px;
-      height: 2px;
-      background: #E8E8EC;
-      transform-origin: left;
-    }}
+TYPE A — INFOGRAPHIE DATA : Quand le texte mentionne des chiffres, statistiques, comparaisons.
+- Barres animées, compteurs qui s'incrémentent, graphiques
+- Gridlines fines, labels typographiques propres
+- Inspiration : NYT-style data visualization
 
-    /* Cards section */
-    .cards-container {{
-      position: absolute;
-      top: 260px;
-      left: 80px;
-      right: 80px;
-      display: flex;
-      gap: 40px;
-      justify-content: center;
-    }}
+TYPE B — FLOWCHART / PROCESS : Quand le texte décrit un processus, des étapes, une méthode.
+- Nodes connectés par des lignes SVG animées
+- Révélation séquentielle nœud par nœud
+- Flèches et connecteurs animés
 
-    .card {{
-      flex: 1;
-      max-width: 520px;
-      background: #F8F8FC;
-      border: 1px solid #E0E0E5;
-      border-radius: 16px;
-      padding: 32px;
-      position: relative;
-    }}
+TYPE C — POINTS CLÉS / CARDS : Quand le texte présente des concepts, arguments, idées.
+- Cards avec icônes (emoji), titres bold, descriptions courtes
+- Stagger animation (apparition séquentielle)
+- Layout en grid ou en colonnes
 
-    .card-badge {{
-      width: 48px;
-      height: 48px;
-      border-radius: 10px;
-      background: #FF7820;
-      color: white;
-      font-size: 24px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 20px;
-    }}
+TYPE D — TEXTE KINÉTIQUE : Quand le texte a un impact émotionnel ou rhétorique.
+- Mots-clés qui apparaissent en grand avec animation
+- Effets : fade-in, slide-up, scale-pop
+- Typographie dramatique (gros/petit contraste)
 
-    .card-title {{
-      font-size: 28px;
-      font-weight: 700;
-      margin-bottom: 12px;
-      line-height: 1.3;
-    }}
+TYPE E — TIMELINE / CHRONOLOGIE : Quand le texte parle d'histoire, évolution, étapes temporelles.
+- Ligne horizontale ou verticale avec marqueurs
+- Dates/labels qui apparaissent séquentiellement
+- Connecteurs animés
 
-    .card-text {{
-      font-size: 20px;
-      font-weight: 400;
-      color: #6E6E78;
-      line-height: 1.5;
-    }}
+═══ PALETTE DE COULEURS (DA) ═══
+{da_colors}
 
-    .card-dot {{
-      position: absolute;
-      bottom: 16px;
-      right: 16px;
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      background: #FF7820;
-    }}
+═══ RÈGLES STRICTES ═══
+- body { width: 1920px; height: 1080px; overflow: hidden; }
+- TOUTES les animations doivent être dans la timeline GSAP (pas de CSS animation)
+- Utilise Google Fonts (Inter, Libre Franklin, ou Libre Baskerville)
+- Le texte doit être LISIBLE (taille minimum 20px pour body, 36px+ pour titres)
+- Pas de scrolling, tout doit tenir dans 1920x1080
+- Durée des animations : adapte au data-duration du segment
+- Commence par opacity: 0 ou clip-path: inset(0 100% 0 0), puis anime
+- Source le GSAP via CDN
 
-    /* Bottom transcript */
-    .transcript {{
-      position: absolute;
-      bottom: 40px;
-      left: 80px;
-      right: 80px;
-      text-align: center;
-    }}
-
-    .transcript-divider {{
-      height: 1px;
-      background: #E8E8EC;
-      margin-bottom: 20px;
-    }}
-
-    .transcript-text {{
-      font-size: 20px;
-      color: #9898A0;
-      line-height: 1.5;
-    }}
-
-    /* Watermark */
-    .watermark {{
-      position: absolute;
-      bottom: 20px;
-      right: 40px;
-      font-size: 16px;
-      color: #D0D0D5;
-      font-weight: 500;
-    }}
-  </style>
-</head>
-<body>
-  <div class="stage" id="stage"
-       data-composition-id="motion-{seg_index}"
-       data-start="0"
-       data-width="1920"
-       data-height="1080">
-
-    <!-- Accent bars -->
-    <div class="top-bar clip" id="top-bar"
-         data-start="0" data-duration="{duration}" data-track-index="0"></div>
-    <div class="left-stripe clip" id="left-stripe"
-         data-start="0" data-duration="{duration}" data-track-index="0"></div>
-    <div class="bottom-bar clip" id="bottom-bar"
-         data-start="0" data-duration="{duration}" data-track-index="0"></div>
-
-    <!-- Header -->
-    <div class="header clip" id="header"
-         data-start="0" data-duration="{duration}" data-track-index="1">
-      <div class="icon-circle" id="icon">💡</div>
-      <h1 class="headline" id="headline">{headline_html}</h1>
-    </div>
-
-    <!-- Divider -->
-    <div class="divider clip" id="divider"
-         data-start="0" data-duration="{duration}" data-track-index="1"></div>
-
-    <!-- Cards -->
-    <div class="cards-container clip" id="cards"
-         data-start="0" data-duration="{duration}" data-track-index="2">
-      {cards_html}
-    </div>
-
-    <!-- Bottom transcript -->
-    <div class="transcript clip" id="transcript"
-         data-start="0" data-duration="{duration}" data-track-index="3">
-      <div class="transcript-divider"></div>
-      <p class="transcript-text">{transcript_text}</p>
-    </div>
-
-    <div class="watermark" id="watermark">Nabi AI</div>
-
-    <!-- GSAP Animation -->
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
-    <script>
-      const tl = gsap.timeline({{ paused: true }});
-
-      // Accent bars animate in
-      tl.from("#top-bar", {{ scaleX: 0, duration: 0.3, ease: "power2.out" }}, 0);
-      tl.from("#left-stripe", {{ scaleY: 0, duration: 0.3, ease: "power2.out" }}, 0.1);
-      tl.from("#bottom-bar", {{ scaleX: 0, duration: 0.3, ease: "power2.out" }}, 0.15);
-
-      // Icon pops in
-      tl.from("#icon", {{ scale: 0, opacity: 0, duration: 0.4, ease: "back.out(2)" }}, 0.2);
-
-      // Headline slides up
-      tl.from("#headline", {{ y: 40, opacity: 0, duration: 0.5, ease: "power3.out" }}, 0.3);
-
-      // Divider draws in
-      tl.from("#divider", {{ scaleX: 0, duration: 0.4, ease: "power2.out" }}, 0.5);
-
-      // Cards stagger in
-      tl.from(".card", {{
-        y: 60, opacity: 0, duration: 0.5,
-        ease: "power3.out",
-        stagger: 0.15
-      }}, 0.6);
-
-      // Card badges pop
-      tl.from(".card-badge", {{
-        scale: 0, duration: 0.3,
-        ease: "back.out(2)",
-        stagger: 0.1
-      }}, 0.9);
-
-      // Card dots fade in
-      tl.from(".card-dot", {{
-        scale: 0, opacity: 0, duration: 0.2,
-        stagger: 0.1
-      }}, 1.1);
-
-      // Transcript fades in
-      tl.from("#transcript", {{ y: 20, opacity: 0, duration: 0.4 }}, 1.0);
-
-      // Watermark
-      tl.from("#watermark", {{ opacity: 0, duration: 0.3 }}, 1.2);
-
-      window.__timelines = window.__timelines || {{}};
-      window.__timelines["motion-{seg_index}"] = tl;
-    </script>
-  </div>
-</body>
-</html>
-"""
+═══ SORTIE ═══
+Réponds UNIQUEMENT avec le code HTML complet (<!doctype html>...). Pas de markdown, pas de ```html, pas d'explication. JUSTE le HTML."""
 
 
 async def generate_motion_clips(
@@ -319,23 +116,21 @@ async def generate_motion_clips(
     transcription: dict,
     mode: str = "hyperframes",
     on_progress=None,
+    da_colors: dict = None,
 ) -> list[dict]:
     """
-    Generate motion design clips for all ai_image/motion_design segments in the EDL.
-
-    Args:
-        edl: Edit Decision List
-        project_dir: Path to the project directory
-        transcription: Full transcription data
-        mode: 'hyperframes' or 'pillow'
-        on_progress: Async callback
-
-    Returns:
-        List of dicts with {segment_index, video_path, ...}
+    Generate motion design clips for all ai_image/motion_design segments.
+    
+    1. For each segment, ask Ollama to generate HyperFrames HTML
+    2. Render each HTML to MP4 via `npx hyperframes render`
+    3. Return list of clip paths for the renderer
     """
     project_path = Path(project_dir)
     motion_dir = project_path / "motion_clips"
     motion_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load DA colors
+    da = {**DEFAULT_DA, **(da_colors or {})}
 
     # Collect motion design segments
     motion_segments = []
@@ -352,7 +147,7 @@ async def generate_motion_clips(
     if on_progress:
         await on_progress("images", 5, f"Création de {total} clips motion design...")
 
-    # Check if HyperFrames is available
+    # Check HyperFrames availability
     hf_available = await _check_hyperframes() if mode == "hyperframes" else False
 
     results = []
@@ -360,36 +155,55 @@ async def generate_motion_clips(
     for idx, (seg_index, seg) in enumerate(motion_segments):
         start_time = time.time()
         duration = round(seg["end"] - seg["start"], 2)
+        if duration < 0.5:
+            duration = 1.5  # Minimum duration
 
-        # Get transcript text for this timestamp
+        # Get transcript text for this segment
         segment_text = _get_text_at_timestamp(transcription, seg["start"], seg["end"])
+        if not segment_text:
+            segment_text = seg.get("image_prompt", seg.get("notes", "Information clé"))
 
         if on_progress:
             pct = 5 + int((idx / total) * 85)
-            await on_progress("images", pct, f"Motion design {idx + 1}/{total}...")
+            await on_progress("images", pct, f"Motion design {idx + 1}/{total} — LLM génère le HTML...")
 
         clip_dir = motion_dir / f"clip_{seg_index:03d}"
         clip_dir.mkdir(parents=True, exist_ok=True)
 
         try:
+            # Step 1: Ask Ollama to generate HyperFrames HTML
+            html_content = await _generate_html_with_ollama(
+                seg_index, segment_text, duration, da
+            )
+
+            if not html_content:
+                raise RuntimeError("Ollama returned empty HTML")
+
+            # Write HTML file
+            html_path = clip_dir / "index.html"
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+
+            # Step 2: Render with HyperFrames
             if hf_available:
-                # Generate HTML composition and render with HyperFrames
-                video_path = await _generate_hyperframes_clip(
-                    clip_dir, seg_index, segment_text, duration
-                )
+                if on_progress:
+                    pct = 5 + int(((idx + 0.6) / total) * 85)
+                    await on_progress("images", pct, f"Motion design {idx + 1}/{total} — HyperFrames render...")
+
+                video_path = await _render_with_hyperframes(clip_dir, html_path)
             else:
-                # Fallback: generate a static image with Pillow
+                # Fallback: generate static image with Pillow
                 video_path = await _generate_pillow_fallback(
-                    clip_dir, seg_index, segment_text, duration
+                    clip_dir, seg_index, segment_text
                 )
 
             gen_time = round(time.time() - start_time, 1)
 
             results.append({
                 "segment_index": seg_index,
-                "video_path": str(video_path) if video_path else None,
-                "image_path": str(video_path) if video_path else None,
-                "type": "motion_clip" if hf_available else "image",
+                "video_path": str(video_path) if video_path and str(video_path).endswith(".mp4") else None,
+                "image_path": str(video_path) if video_path and not str(video_path).endswith(".mp4") else None,
+                "type": "motion_clip" if hf_available and str(video_path).endswith(".mp4") else "image",
                 "generation_time": gen_time,
             })
 
@@ -399,15 +213,15 @@ async def generate_motion_clips(
 
         except Exception as e:
             print(f"⚠️ Motion design failed for segment {seg_index}: {e}")
-            # Try Pillow fallback
+            # Pillow fallback
             try:
-                video_path = await _generate_pillow_fallback(
-                    clip_dir, seg_index, segment_text, duration
+                fallback_path = await _generate_pillow_fallback(
+                    clip_dir, seg_index, segment_text
                 )
                 results.append({
                     "segment_index": seg_index,
-                    "video_path": str(video_path),
-                    "image_path": str(video_path),
+                    "video_path": None,
+                    "image_path": str(fallback_path),
                     "type": "image_fallback",
                     "generation_time": 0,
                     "error": str(e),
@@ -428,10 +242,110 @@ async def generate_motion_clips(
 
     if on_progress:
         mode_label = "HyperFrames" if hf_available else "Pillow (fallback)"
-        await on_progress("images", 100, f"✓ {len(results)} clips motion design ({mode_label})")
+        ok_count = sum(1 for r in results if r.get("video_path") or r.get("image_path"))
+        await on_progress("images", 100, f"✓ {ok_count}/{total} clips motion design ({mode_label})")
 
     return results
 
+
+# ── LLM HTML Generation ──
+
+async def _generate_html_with_ollama(
+    seg_index: int, segment_text: str, duration: float, da: dict
+) -> str:
+    """Use Ollama to generate a HyperFrames HTML composition."""
+
+    da_colors_text = f"""
+- Couleur primaire (accents, icônes) : {da['primary']}
+- Couleur secondaire (texte principal) : {da['secondary']}
+- Fond : {da['background']}
+- Surface (cards) : {da['surface']}
+- Texte secondaire : {da['text_secondary']}
+- Accent données/graphiques : {da['accent_2']}
+- Police : {da['font_family']}"""
+
+    system = MOTION_DESIGN_SYSTEM_PROMPT.replace("{da_colors}", da_colors_text)
+
+    user_prompt = f"""Génère une composition HyperFrames HTML pour ce segment de vidéo.
+
+INDEX DU SEGMENT : {seg_index}
+DURÉE : {duration} secondes
+TEXTE DE LA TRANSCRIPTION :
+\"{segment_text}\"
+
+Choisis le type de composition le plus adapté (data chart, flowchart, cards, texte kinétique, timeline) en fonction du contenu du texte. La composition doit illustrer visuellement ce que dit le speaker de manière instructive et engageante.
+
+Rappel :
+- data-composition-id="motion-{seg_index}"
+- data-duration="{duration}"
+- Enregistre la timeline dans window.__timelines["motion-{seg_index}"]
+- UNIQUEMENT du HTML, pas de markdown."""
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": "qwen3:4b",
+                    "prompt": user_prompt,
+                    "system": system,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "num_predict": 4096,
+                    },
+                },
+            )
+
+            if response.status_code != 200:
+                raise RuntimeError(f"Ollama error: {response.status_code}")
+
+            data = response.json()
+            raw = data.get("response", "")
+
+            # Clean response — extract HTML
+            html = _extract_html(raw)
+            return html
+
+    except httpx.TimeoutException:
+        raise RuntimeError("Ollama timeout (120s)")
+    except httpx.ConnectError:
+        raise RuntimeError("Ollama not running (localhost:11434)")
+
+
+def _extract_html(raw: str) -> str:
+    """Extract clean HTML from LLM response (remove markdown fences, thinking tags, etc.)."""
+    text = raw.strip()
+
+    # Remove <think>...</think> blocks (Qwen3 thinking mode)
+    import re
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+
+    # Remove markdown code fences
+    text = re.sub(r'^```html?\s*\n?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\n?```\s*$', '', text, flags=re.MULTILINE)
+
+    text = text.strip()
+
+    # Find the HTML document
+    if '<!doctype' in text.lower() or '<!DOCTYPE' in text:
+        start = text.lower().find('<!doctype')
+        if start == -1:
+            start = text.lower().find('<!DOCTYPE')
+        end = text.rfind('</html>')
+        if end != -1:
+            text = text[start:end + 7]
+
+    elif '<html' in text.lower():
+        start = text.lower().find('<html')
+        end = text.rfind('</html>')
+        if end != -1:
+            text = text[start:end + 7]
+
+    return text
+
+
+# ── HyperFrames Rendering ──
 
 async def _check_hyperframes() -> bool:
     """Check if HyperFrames CLI is available."""
@@ -446,117 +360,38 @@ async def _check_hyperframes() -> bool:
         return False
 
 
-async def _generate_hyperframes_clip(
-    clip_dir: Path, seg_index: int, segment_text: str, duration: float
-) -> str:
-    """Generate an animated HTML composition and render it with HyperFrames."""
-
-    # Build the HTML content
-    html_content = _build_motion_html(seg_index, segment_text, duration)
-
-    # Write HTML file
-    html_path = clip_dir / "index.html"
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-
-    # Render with HyperFrames
+async def _render_with_hyperframes(clip_dir: Path, html_path: Path) -> str:
+    """Render HTML composition to MP4 using HyperFrames CLI."""
     output_path = clip_dir / "output.mp4"
 
     cmd = [
         "npx", "hyperframes", "render",
         str(html_path),
-        "--output", str(output_path),
-        "--width", "1920",
-        "--height", "1080",
-        "--fps", "30",
+        "-o", str(output_path),
+        "--resolution", "landscape",
     ]
 
     result = await asyncio.to_thread(
         subprocess.run, cmd,
         capture_output=True, text=True,
         cwd=str(clip_dir),
-        timeout=60,
+        timeout=120,
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"HyperFrames render failed: {result.stderr[-300:]}")
+        stderr = result.stderr[-500:] if result.stderr else "No stderr"
+        raise RuntimeError(f"HyperFrames render failed: {stderr}")
 
     if not output_path.exists():
-        raise FileNotFoundError(f"HyperFrames output not found: {output_path}")
+        raise FileNotFoundError(f"Output not found: {output_path}")
 
     return str(output_path)
 
 
-async def _generate_pillow_fallback(
-    clip_dir: Path, seg_index: int, segment_text: str, duration: float
-) -> str:
-    """Generate a static editorial image as fallback (when HyperFrames not available)."""
-    output_path = clip_dir / f"frame_{seg_index:03d}.png"
-
-    await asyncio.to_thread(
-        _generate_editorial_image, segment_text, str(output_path)
-    )
-
-    return str(output_path)
-
-
-def _build_motion_html(seg_index: int, segment_text: str, duration: float) -> str:
-    """Build the HTML composition for a motion design clip."""
-
-    # Extract key concepts for cards
-    concepts = _extract_key_concepts(segment_text)
-
-    # Build headline — first sentence or first 80 chars
-    headline = segment_text.strip()
-    if len(headline) > 80:
-        if "," in headline[:80]:
-            headline = headline[:headline.rindex(",", 0, 80)]
-        elif " " in headline[60:80]:
-            headline = headline[:headline.rindex(" ", 60, 80)]
-        else:
-            headline = headline[:77] + "..."
-
-    # Highlight key words in orange
-    headline_html = headline
-    if concepts:
-        # Highlight the first concept word in the headline
-        for concept in concepts[:1]:
-            first_word = concept.split()[0] if concept else ""
-            if first_word and first_word.lower() in headline_html.lower():
-                idx = headline_html.lower().find(first_word.lower())
-                original = headline_html[idx:idx + len(first_word)]
-                headline_html = (
-                    headline_html[:idx]
-                    + f'<span class="highlight">{original}</span>'
-                    + headline_html[idx + len(first_word):]
-                )
-                break
-
-    # Build cards HTML
-    cards_html = ""
-    for i, concept in enumerate(concepts[:3]):
-        cards_html += f"""
-      <div class="card" id="card-{i}">
-        <div class="card-badge">{i + 1}</div>
-        <div class="card-title">{concept.capitalize()}</div>
-        <div class="card-text">Point clé du discours</div>
-        <div class="card-dot"></div>
-      </div>"""
-
-    # Truncate transcript text for bottom display
-    transcript_text = segment_text[:120] + ("..." if len(segment_text) > 120 else "")
-
-    return MOTION_HTML_TEMPLATE.format(
-        seg_index=seg_index,
-        duration=duration,
-        headline_html=headline_html,
-        cards_html=cards_html,
-        transcript_text=transcript_text,
-    )
-
+# ── Transcript Extraction ──
 
 def _get_text_at_timestamp(transcription: dict, start: float, end: float) -> str:
-    """Extract the exact transcript text for a given timestamp range."""
+    """Extract transcript text for a given time range."""
     segments = transcription.get("segments", [])
     texts = []
 
@@ -576,17 +411,26 @@ def _get_text_at_timestamp(transcription: dict, start: float, end: float) -> str
     return " ".join(texts).strip() if texts else ""
 
 
+# ── Pillow Fallback ──
+
+async def _generate_pillow_fallback(
+    clip_dir: Path, seg_index: int, segment_text: str
+) -> str:
+    """Generate a static editorial image as fallback."""
+    output_path = clip_dir / f"frame_{seg_index:03d}.png"
+    await asyncio.to_thread(_generate_editorial_image, segment_text, str(output_path))
+    return str(output_path)
+
+
 def _extract_key_concepts(text: str) -> list[str]:
-    """Extract 3 key concepts from the text for infographic cards."""
+    """Extract key concepts from text for infographic cards."""
     stop_words = {
         "le", "la", "les", "de", "du", "des", "un", "une", "et", "en", "est", "que",
         "qui", "dans", "ce", "il", "ne", "pas", "pour", "sur", "avec", "plus", "par",
         "son", "se", "sont", "au", "nous", "vous", "ils", "on", "a", "je", "tu", "sa",
         "cette", "ces", "mais", "ou", "donc", "car", "si", "tout", "bien", "très",
         "aussi", "fait", "faire", "être", "avoir", "c'est", "ça", "là", "y", "te", "me",
-        "j'ai", "m'a", "mon", "mes", "pu", "aux", "à",
     }
-
     words = text.lower().replace("'", " ").replace("'", " ").split()
     meaningful = [w for w in words if len(w) > 3 and w not in stop_words]
 
@@ -602,11 +446,8 @@ def _extract_key_concepts(text: str) -> list[str]:
 
     while len(concepts) < 3 and meaningful:
         concepts.append(meaningful[len(concepts) % len(meaningful)])
-
     return concepts
 
-
-# ── Pillow Fallback ──
 
 def _generate_editorial_image(segment_text: str, output_path: str):
     """Generate a clean editorial-style image using Pillow (fallback)."""
@@ -662,7 +503,6 @@ def _generate_editorial_image(segment_text: str, output_path: str):
     # Transcript
     draw.rectangle([80, H - 100, W - 80, H - 98], fill=(230, 230, 235))
     draw.text((W // 2, H - 60), segment_text[:100], fill=GRAY, font=small_font, anchor="mt")
-
     draw.text((W - 100, H - 30), "Nabi AI", fill=(200, 200, 205), font=small_font, anchor="mm")
 
     img.save(output_path, quality=95)

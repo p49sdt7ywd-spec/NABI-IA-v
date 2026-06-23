@@ -10,6 +10,10 @@ export default function SettingsPage() {
     ollama_model: 'qwen3:4b',
     whisper_model: 'mlx-community/whisper-large-v3-turbo',
     motion_mode: 'hyperframes',
+    da_primary: '#FF7820',
+    da_secondary: '#1E1E28',
+    da_background: '#FFFFFF',
+    da_accent_2: '#326FA8',
     output_resolution: '1080p',
     output_dir: '~/nabi-ai/projects',
     pip_enabled: 'true',
@@ -163,10 +167,65 @@ export default function SettingsPage() {
               </div>
               <p className="form-hint">
                 HyperFrames crée des clips motion design animés (HTML/CSS/GSAP → MP4).
-                Nécessite Node.js 22+ —{' '}
-                <a href="https://hyperframes.heygen.com" target="_blank" rel="noopener" style={{ color: 'var(--accent-violet-light)' }}>
-                  hyperframes.heygen.com
-                </a>
+                L'IA orchestrateur génère le HTML adapté au contenu de la transcription.
+              </p>
+            </div>
+
+            {/* DA Color Palette */}
+            <div className="form-group">
+              <label className="form-label">Palette DA (Direction Artistique)</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <input
+                    type="color"
+                    value={settings.da_primary}
+                    onChange={(e) => update('da_primary', e.target.value)}
+                    style={{ width: 40, height: 40, border: 'none', borderRadius: 8, cursor: 'pointer', background: 'none' }}
+                  />
+                  <div>
+                    <div className="text-sm font-semibold">Primaire</div>
+                    <div className="text-xs text-tertiary">Accents, icônes</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <input
+                    type="color"
+                    value={settings.da_secondary}
+                    onChange={(e) => update('da_secondary', e.target.value)}
+                    style={{ width: 40, height: 40, border: 'none', borderRadius: 8, cursor: 'pointer', background: 'none' }}
+                  />
+                  <div>
+                    <div className="text-sm font-semibold">Secondaire</div>
+                    <div className="text-xs text-tertiary">Texte principal</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <input
+                    type="color"
+                    value={settings.da_background}
+                    onChange={(e) => update('da_background', e.target.value)}
+                    style={{ width: 40, height: 40, border: 'none', borderRadius: 8, cursor: 'pointer', background: 'none' }}
+                  />
+                  <div>
+                    <div className="text-sm font-semibold">Fond</div>
+                    <div className="text-xs text-tertiary">Arrière-plan</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <input
+                    type="color"
+                    value={settings.da_accent_2}
+                    onChange={(e) => update('da_accent_2', e.target.value)}
+                    style={{ width: 40, height: 40, border: 'none', borderRadius: 8, cursor: 'pointer', background: 'none' }}
+                  />
+                  <div>
+                    <div className="text-sm font-semibold">Accent 2</div>
+                    <div className="text-xs text-tertiary">Données, graphiques</div>
+                  </div>
+                </div>
+              </div>
+              <p className="form-hint" style={{ marginTop: 'var(--space-2)' }}>
+                Ces couleurs sont utilisées par l'IA pour générer les motion designs.
               </p>
             </div>
           </div>
