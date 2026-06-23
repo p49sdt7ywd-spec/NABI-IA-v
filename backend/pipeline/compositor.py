@@ -99,6 +99,7 @@ async def run_full_pipeline(
     images = await image_generator.generate_images(
         edl=edl,
         project_dir=project_dir,
+        transcription=transcription,
         mode=image_mode,
         replicate_api_key=replicate_api_key,
         on_progress=on_progress,

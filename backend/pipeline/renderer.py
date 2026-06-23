@@ -1,12 +1,16 @@
 """
-Nabi AI — FFmpeg Renderer Pipeline Module
-Builds complex FFmpeg filtergraphs for the final video composition:
-  - Facecam with dynamic zooms
+Nabi AI — FFmpeg Renderer Pipeline Module (v2)
+Builds FFmpeg commands for the final video composition:
+  - Facecam segments with trim (no zoompan — it causes duration explosion)
   - B-roll overlays with PiP (Picture-in-Picture)
-  - AI image overlays with smooth zoom-in
-  - Crossfade transitions between segments
-  - Silence removal
-  - H.264/H.265 export at 1080p
+  - AI image overlays with PiP
+  - Concatenation via concat demuxer (stream copy, no re-encode)
+  - Optional silence removal
+  - H.264 export at 1080p
+
+CRITICAL FIX: zoompan filter was removed because it generates `d` frames
+for EACH input frame, causing a 2-min video to become 26+ minutes.
+Instead, we use simple scale+crop for consistent output duration.
 """
 
 import asyncio
@@ -26,32 +30,17 @@ async def render(
     brolls: list[dict],
     source_video: str,
     resolution: str = "1080p",
-    remove_silences: bool = True,
+    remove_silences: bool = False,
     pip_enabled: bool = True,
     on_progress=None,
 ) -> str:
     """
     Render the final edited video from the EDL, source video, images, and B-rolls.
 
-    This uses a multi-pass approach for reliability:
-      1. Prepare trimmed segments from source video
-      2. Apply effects (zoom, PiP) per segment
-      3. Concatenate all segments with transitions
-      4. Export final MP4
-
-    Args:
-        edl: Edit Decision List
-        project_dir: Path to the project directory
-        images: Image manifest from image_generator
-        brolls: B-roll manifest from broll_sourcer
-        source_video: Path to the source video
-        resolution: Output resolution ('1080p', '720p', '4k')
-        remove_silences: Whether to remove silence gaps
-        pip_enabled: Whether to enable PiP overlay
-        on_progress: Async callback for progress updates
-
-    Returns:
-        Path to the final output video
+    Multi-pass approach:
+      1. Render each segment individually (trim + effects)
+      2. Concatenate all segments (stream copy — fast, no re-encode)
+      3. Optional silence removal
     """
     project_path = Path(project_dir)
     temp_dir = project_path / "render_temp"
@@ -84,41 +73,43 @@ async def render(
 
     for i, seg in enumerate(segments):
         if on_progress:
-            pct = 5 + int((i / total_segs) * 60)
+            pct = 5 + int((i / total_segs) * 65)
             await on_progress("render", pct, f"Rendu segment {i + 1}/{total_segs}...")
 
         seg_type = seg.get("type", "facecam")
         start = seg["start"]
         end = seg["end"]
-        duration = end - start
-        effect = seg.get("effect", "none")
+        duration = round(end - start, 3)
         has_pip = seg.get("pip", False) and pip_enabled
+
+        if duration <= 0.05:
+            continue
 
         output_seg = str(temp_dir / f"seg_{i:04d}.mp4")
 
         try:
             if seg_type == "facecam":
-                await _render_facecam_segment(
+                await _render_facecam(
                     ffmpeg, source_video, output_seg,
-                    start, duration, width, height, effect,
+                    start, duration, width, height,
                 )
             elif seg_type == "broll_video" and i in broll_map:
                 broll_path = broll_map[i]["video_path"]
-                await _render_broll_segment(
+                await _render_broll(
                     ffmpeg, source_video, broll_path, output_seg,
                     start, duration, width, height, has_pip,
                 )
             elif seg_type == "ai_image" and i in image_map:
                 image_path = image_map[i]["image_path"]
-                await _render_image_segment(
+                await _render_image(
                     ffmpeg, source_video, image_path, output_seg,
-                    start, duration, width, height, effect, has_pip,
+                    start, duration, width, height, has_pip,
                 )
             else:
-                # Fallback: plain facecam cut
-                await _render_facecam_segment(
+                # Fallback: plain facecam
+                await _render_facecam(
                     ffmpeg, source_video, output_seg,
-                    start, duration, width, height, "none",
+                    start, duration, width, height,
                 )
 
             if os.path.exists(output_seg) and os.path.getsize(output_seg) > 0:
@@ -128,11 +119,11 @@ async def render(
 
         except Exception as e:
             print(f"⚠️ Segment {i} render failed: {e}")
-            # Fallback: simple cut from source
+            # Fallback: simple cut
             try:
-                await _render_facecam_segment(
+                await _render_facecam(
                     ffmpeg, source_video, output_seg,
-                    start, duration, width, height, "none",
+                    start, duration, width, height,
                 )
                 if os.path.exists(output_seg) and os.path.getsize(output_seg) > 0:
                     segment_files.append(output_seg)
@@ -149,23 +140,22 @@ async def render(
     output_path = str(project_path / "output.mp4")
 
     if len(segment_files) == 1:
-        # Single segment, just copy
         os.rename(segment_files[0], output_path)
     else:
-        await _concatenate_segments(ffmpeg, segment_files, output_path, width, height)
+        await _concatenate_segments(ffmpeg, segment_files, output_path)
 
     # ── Pass 3 (optional): Remove silences ──
     if remove_silences and os.path.exists(output_path):
         if on_progress:
             await on_progress("render", 90, "Suppression des silences...")
-        
+
         trimmed_path = str(project_path / "output_trimmed.mp4")
         silence_removed = await _remove_silences(ffmpeg, output_path, trimmed_path)
-        
+
         if silence_removed and os.path.exists(trimmed_path):
             os.replace(trimmed_path, output_path)
 
-    # ── Cleanup temp files ──
+    # ── Cleanup ──
     if on_progress:
         await on_progress("render", 95, "Nettoyage...")
 
@@ -179,96 +169,82 @@ async def render(
 
 
 # ── Segment Renderers ─────────────────────────
+# CRITICAL: No zoompan filter! It generates d frames PER input frame,
+# causing massive duration explosion. Use simple trim + scale instead.
 
-async def _render_facecam_segment(
+async def _render_facecam(
     ffmpeg: str, source: str, output: str,
     start: float, duration: float,
-    width: int, height: int, effect: str,
+    width: int, height: int,
 ):
-    """Render a facecam segment with optional zoom effect."""
-    filters = [f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"]
-
-    if effect == "zoom_in":
-        # Smooth zoom from 1.0x to 1.15x
-        filters.append(
-            f"zoompan=z='min(1+0.15*on/{max(duration * 30, 1)},1.15)'"
-            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            f":d={int(duration * 30)}:s={width}x{height}:fps=30"
-        )
-    elif effect == "zoom_out":
-        # Smooth zoom from 1.15x to 1.0x
-        filters.append(
-            f"zoompan=z='max(1.15-0.15*on/{max(duration * 30, 1)},1.0)'"
-            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            f":d={int(duration * 30)}:s={width}x{height}:fps=30"
-        )
-
-    filter_str = ",".join(filters)
-
+    """Render a facecam segment — simple trim + scale."""
     cmd = [
         ffmpeg, "-y",
         "-ss", str(start),
         "-t", str(duration),
         "-i", source,
-        "-vf", filter_str,
+        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+               f"setsar=1",
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-c:a", "aac", "-b:a", "192k",
         "-r", "30",
         "-movflags", "+faststart",
+        "-t", str(duration),
         output,
     ]
-
     await _run_ffmpeg(cmd)
 
 
-async def _render_broll_segment(
+async def _render_broll(
     ffmpeg: str, source: str, broll_path: str, output: str,
     start: float, duration: float,
     width: int, height: int, has_pip: bool,
 ):
-    """Render a B-roll segment, optionally with PiP facecam overlay."""
+    """Render a B-roll segment with audio from source, optional PiP."""
     if not has_pip:
-        # Simple B-roll, use audio from source
+        # Simple B-roll, audio from source
         cmd = [
             ffmpeg, "-y",
-            "-ss", str(start), "-t", str(duration), "-i", source,       # Audio source
-            "-t", str(duration), "-i", broll_path,                       # B-roll video
+            "-ss", str(start), "-t", str(duration), "-i", source,
+            "-stream_loop", "-1", "-t", str(duration), "-i", broll_path,
             "-filter_complex",
             f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[broll]",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[broll]",
             "-map", "[broll]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-c:a", "aac", "-b:a", "192k",
             "-r", "30", "-shortest",
+            "-t", str(duration),
             "-movflags", "+faststart",
             output,
         ]
     else:
-        # B-roll with PiP overlay
+        # B-roll with PiP facecam overlay
         pip_w = int(width * 0.28)
         pip_h = int(height * 0.28)
         pip_x = width - pip_w - 30
         pip_y = height - pip_h - 30
-        border = 3
+        border = 4
 
         cmd = [
             ffmpeg, "-y",
             "-ss", str(start), "-t", str(duration), "-i", source,
-            "-t", str(duration), "-i", broll_path,
+            "-stream_loop", "-1", "-t", str(duration), "-i", broll_path,
             "-filter_complex",
             # Scale B-roll to full frame
             f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[broll];"
-            # Scale facecam for PiP
-            f"[0:v]scale={pip_w}:{pip_h}:force_original_aspect_ratio=decrease,"
-            f"pad={pip_w}:{pip_h}:(ow-iw)/2:(oh-ih)/2,"
-            f"drawbox=x=0:y=0:w={pip_w}:h={pip_h}:color=white:t={border}[pip];"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[broll];"
+            # Scale facecam for PiP with white border
+            f"[0:v]scale={pip_w - border * 2}:{pip_h - border * 2}:force_original_aspect_ratio=decrease,"
+            f"pad={pip_w}:{pip_h}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1[pip];"
             # Overlay PiP on B-roll
-            f"[broll][pip]overlay={pip_x}:{pip_y}[out]",
+            f"[broll][pip]overlay={pip_x}:{pip_y}:shortest=1[out]",
             "-map", "[out]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-c:a", "aac", "-b:a", "192k",
             "-r", "30", "-shortest",
+            "-t", str(duration),
             "-movflags", "+faststart",
             output,
         ]
@@ -276,40 +252,26 @@ async def _render_broll_segment(
     await _run_ffmpeg(cmd)
 
 
-async def _render_image_segment(
+async def _render_image(
     ffmpeg: str, source: str, image_path: str, output: str,
     start: float, duration: float,
-    width: int, height: int, effect: str, has_pip: bool,
+    width: int, height: int, has_pip: bool,
 ):
-    """Render an AI image segment with zoom effect and optional PiP."""
-    # Build filtergraph
-    frames = int(duration * 30)
-
-    if effect == "smooth_zoom_in":
-        zoom_filter = (
-            f"zoompan=z='min(1+0.08*on/{max(frames, 1)},1.08)'"
-            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            f":d={frames}:s={width}x{height}:fps=30"
-        )
-    else:
-        zoom_filter = (
-            f"zoompan=z='1':x='0':y='0'"
-            f":d={frames}:s={width}x{height}:fps=30"
-        )
-
+    """Render an AI image segment with audio from source, optional PiP."""
     if not has_pip:
         cmd = [
             ffmpeg, "-y",
-            "-ss", str(start), "-t", str(duration), "-i", source,   # Audio
-            "-loop", "1", "-t", str(duration), "-i", image_path,     # Image
+            "-ss", str(start), "-t", str(duration), "-i", source,
+            "-loop", "1", "-t", str(duration), "-framerate", "30", "-i", image_path,
             "-filter_complex",
             f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-            f"{zoom_filter}[img]",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1,"
+            f"trim=duration={duration},setpts=PTS-STARTPTS[img]",
             "-map", "[img]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-c:a", "aac", "-b:a", "192k",
             "-r", "30", "-shortest",
+            "-t", str(duration),
             "-movflags", "+faststart",
             output,
         ]
@@ -318,27 +280,27 @@ async def _render_image_segment(
         pip_h = int(height * 0.28)
         pip_x = width - pip_w - 30
         pip_y = height - pip_h - 30
-        border = 3
+        border = 4
 
         cmd = [
             ffmpeg, "-y",
             "-ss", str(start), "-t", str(duration), "-i", source,
-            "-loop", "1", "-t", str(duration), "-i", image_path,
+            "-loop", "1", "-t", str(duration), "-framerate", "30", "-i", image_path,
             "-filter_complex",
-            # Scale and zoom image
+            # Scale image to full frame
             f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-            f"{zoom_filter}[img];"
-            # Scale facecam for PiP
-            f"[0:v]scale={pip_w}:{pip_h}:force_original_aspect_ratio=decrease,"
-            f"pad={pip_w}:{pip_h}:(ow-iw)/2:(oh-ih)/2,"
-            f"drawbox=x=0:y=0:w={pip_w}:h={pip_h}:color=white:t={border}[pip];"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1,"
+            f"trim=duration={duration},setpts=PTS-STARTPTS[img];"
+            # Scale facecam for PiP with white border
+            f"[0:v]scale={pip_w - border * 2}:{pip_h - border * 2}:force_original_aspect_ratio=decrease,"
+            f"pad={pip_w}:{pip_h}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1[pip];"
             # Overlay PiP on image
-            f"[img][pip]overlay={pip_x}:{pip_y}[out]",
+            f"[img][pip]overlay={pip_x}:{pip_y}:shortest=1[out]",
             "-map", "[out]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-c:a", "aac", "-b:a", "192k",
             "-r", "30", "-shortest",
+            "-t", str(duration),
             "-movflags", "+faststart",
             output,
         ]
@@ -350,14 +312,11 @@ async def _render_image_segment(
 
 async def _concatenate_segments(
     ffmpeg: str, segment_files: list[str], output: str,
-    width: int, height: int,
 ):
-    """Concatenate segment files using the concat demuxer."""
-    # Create concat file list
+    """Concatenate segment files using concat demuxer with stream copy (no re-encode)."""
     concat_path = os.path.join(os.path.dirname(segment_files[0]), "concat_list.txt")
     with open(concat_path, "w") as f:
         for seg_file in segment_files:
-            # Escape special characters in path
             escaped = seg_file.replace("'", "'\\''")
             f.write(f"file '{escaped}'\n")
 
@@ -365,8 +324,7 @@ async def _concatenate_segments(
         ffmpeg, "-y",
         "-f", "concat", "-safe", "0",
         "-i", concat_path,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c", "copy",
         "-movflags", "+faststart",
         output,
     ]
@@ -398,25 +356,23 @@ async def _remove_silences(
             capture_output=True, text=True,
         )
 
-        # Parse silence intervals from stderr
         silences = _parse_silence_detection(result.stderr)
 
         if not silences:
-            return False  # No silences found, skip
+            return False
 
-        # Step 2: Build select filter to keep non-silent parts
-        # Get total duration first
-        duration = _get_duration_from_ffmpeg(ffmpeg, input_path)
+        # Step 2: Get total duration
+        duration = _get_duration(ffmpeg, input_path)
         if duration <= 0:
             return False
 
-        # Build the inverse of silence intervals (speech segments)
+        # Step 3: Build speech segments (inverse of silences)
         speech_segments = _invert_silences(silences, duration)
 
         if not speech_segments or len(speech_segments) < 2:
-            return False  # Not enough segments to be worth trimming
+            return False
 
-        # Step 3: Create a concat filter from speech segments
+        # Step 4: Trim and concatenate speech segments
         temp_dir = os.path.dirname(output_path)
         speech_files = []
 
@@ -431,8 +387,7 @@ async def _remove_silences(
                 "-ss", str(seg_start),
                 "-t", str(seg_duration),
                 "-i", input_path,
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "192k",
+                "-c", "copy",
                 seg_path,
             ]
             await _run_ffmpeg(trim_cmd)
@@ -440,7 +395,6 @@ async def _remove_silences(
                 speech_files.append(seg_path)
 
         if len(speech_files) < 2:
-            # Cleanup
             for f in speech_files:
                 _safe_remove(f)
             return False
@@ -456,14 +410,13 @@ async def _remove_silences(
             ffmpeg, "-y",
             "-f", "concat", "-safe", "0",
             "-i", concat_list,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "192k",
+            "-c", "copy",
             "-movflags", "+faststart",
             output_path,
         ]
         await _run_ffmpeg(concat_cmd)
 
-        # Cleanup temp files
+        # Cleanup
         for f in speech_files:
             _safe_remove(f)
         _safe_remove(concat_list)
@@ -517,8 +470,8 @@ def _invert_silences(silences: list[tuple[float, float]], total_duration: float)
     return speech
 
 
-def _get_duration_from_ffmpeg(ffmpeg: str, video_path: str) -> float:
-    """Get video duration using ffmpeg."""
+def _get_duration(ffmpeg: str, video_path: str) -> float:
+    """Get video duration using ffprobe or ffmpeg."""
     ffprobe = ffmpeg.replace("ffmpeg", "ffprobe")
     try:
         if os.path.isfile(ffprobe):
@@ -556,7 +509,6 @@ async def _run_ffmpeg(cmd: list[str]):
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        # Log stderr but don't include full output in error (can be very long)
         stderr_summary = result.stderr[-500:] if result.stderr else "No error output"
         raise RuntimeError(f"FFmpeg failed (exit {result.returncode}): ...{stderr_summary}")
 
