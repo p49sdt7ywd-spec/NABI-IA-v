@@ -54,6 +54,7 @@ async def run_full_pipeline(
     whisper_model = settings.get("whisper_model", "mlx-community/whisper-large-v3-turbo")
     ollama_model = settings.get("ollama_model", "qwen3:4b")
     motion_mode = settings.get("motion_mode", "hyperframes")
+    motion_design_enabled = settings.get("motion_design_enabled", "true") == "true"
     pexels_api_key = settings.get("pexels_api_key", "")
     output_resolution = settings.get("output_resolution", "1080p")
     pip_enabled = settings.get("pip_enabled", "true") == "true"
@@ -92,31 +93,38 @@ async def run_full_pipeline(
     print(f"📋 EDL: {total_segs} segments, {total_brolls} B-rolls, {total_images} motion design")
 
     # ── Stage 3: Motion Design (HyperFrames) ──
-    if on_progress:
-        await on_progress("images", 0, "Création des clips motion design...")
+    if motion_design_enabled:
+        if on_progress:
+            await on_progress("motion_design", 0, "Création des clips motion design...")
 
-    # DA colors from settings
-    da_colors = {
-        "primary": settings.get("da_primary", "#FF7820"),
-        "secondary": settings.get("da_secondary", "#1E1E28"),
-        "background": settings.get("da_background", "#FFFFFF"),
-        "surface": "#F8F8FC",
-        "text_primary": settings.get("da_secondary", "#1E1E28"),
-        "text_secondary": "#6E6E78",
-        "accent_2": settings.get("da_accent_2", "#326FA8"),
-        "font_family": "Inter",
-    }
+        # DA colors from settings
+        da_colors = {
+            "primary": settings.get("da_primary", "#FF7820"),
+            "secondary": settings.get("da_secondary", "#1E1E28"),
+            "background": settings.get("da_background", "#FFFFFF"),
+            "surface": "#F8F8FC",
+            "text_primary": settings.get("da_secondary", "#1E1E28"),
+            "text_secondary": "#6E6E78",
+            "accent_2": settings.get("da_accent_2", "#326FA8"),
+            "font_family": "Inter",
+        }
 
-    motion_clips = await motion_design.generate_motion_clips(
-        edl=edl,
-        project_dir=project_dir,
-        transcription=transcription,
-        mode=motion_mode,
-        on_progress=on_progress,
-        da_colors=da_colors,
-    )
-    results["images"] = motion_clips
-    results["stages_completed"].append("images")
+        motion_clips = await motion_design.generate_motion_clips(
+            edl=edl,
+            project_dir=project_dir,
+            transcription=transcription,
+            mode=motion_mode,
+            on_progress=on_progress,
+            da_colors=da_colors,
+        )
+        results["images"] = motion_clips
+    else:
+        if on_progress:
+            await on_progress("motion_design", 100, "Motion Design désactivé — étape ignorée")
+        results["images"] = []
+        print("⏭️ Motion Design désactivé — étape ignorée")
+
+    results["stages_completed"].append("motion_design")
 
     # ── Stage 4: B-Roll Sourcing ───────────────
     if on_progress:

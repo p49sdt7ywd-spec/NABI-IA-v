@@ -19,12 +19,12 @@ import {
   type ProgressUpdate,
 } from '@/lib/api';
 
-const PIPELINE_STEPS = ['transcription', 'analysis', 'images', 'broll', 'render'];
+const PIPELINE_STEPS = ['transcription', 'analysis', 'motion_design', 'broll', 'render'];
 
 const STEP_LABELS: Record<string, { title: string; subtitle: string }> = {
   transcription: { title: 'Transcription', subtitle: 'mlx-whisper (large-v3-turbo)' },
   analysis: { title: 'Analyse IA', subtitle: 'Ollama — Décisions de montage' },
-  images: { title: 'Images IA', subtitle: 'Génération FLUX / Replicate' },
+  motion_design: { title: 'Motion Design', subtitle: 'HyperFrames — Animations IA' },
   broll: { title: 'B-roll', subtitle: 'Pexels API — Clips stock' },
   render: { title: 'Rendu Final', subtitle: 'FFmpeg — Composition' },
 };
@@ -41,6 +41,7 @@ export default function ProjectPage() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState('');
   const [videoTab, setVideoTab] = useState<'source' | 'output'>('output');
+  const [motionDesignEnabled, setMotionDesignEnabled] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
 
   // Delete project
@@ -77,7 +78,7 @@ export default function ProjectPage() {
   const handleRestart = async () => {
     setActionLoading('restart');
     try {
-      await startProcessing(projectId);
+      await startProcessing(projectId, { motion_design_enabled: motionDesignEnabled });
       const p = await fetchProject(projectId);
       setProject(p);
     } catch (e) {
@@ -147,15 +148,24 @@ export default function ProjectPage() {
     return 'pending';
   };
 
-  const steps = PIPELINE_STEPS.map((id) => ({
-    id,
-    title: STEP_LABELS[id].title,
-    subtitle:
-      currentStep === id && stepMessage
-        ? stepMessage
-        : STEP_LABELS[id].subtitle,
-    status: getStepStatus(id),
-  }));
+  const steps = PIPELINE_STEPS.map((id) => {
+    let title = STEP_LABELS[id].title;
+    let subtitle = currentStep === id && stepMessage
+      ? stepMessage
+      : STEP_LABELS[id].subtitle;
+
+    // Show disabled state for motion_design step when skipped
+    if (id === 'motion_design' && getStepStatus(id) === 'completed' && stepMessage?.includes('désactivé')) {
+      subtitle = 'Désactivé pour ce projet';
+    }
+
+    return {
+      id,
+      title,
+      subtitle,
+      status: getStepStatus(id),
+    };
+  });
 
   const completedSteps = steps.filter((s) => s.status === 'completed').length;
   const overallProgress = project?.status === 'completed'
@@ -403,7 +413,7 @@ export default function ProjectPage() {
                       <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 700, fontFamily: 'var(--font-display)' }}>
                         {edl?.total_ai_images || 0}
                       </div>
-                      <div className="text-xs text-secondary" style={{ marginTop: 'var(--space-1)' }}>Images IA</div>
+                      <div className="text-xs text-secondary" style={{ marginTop: 'var(--space-1)' }}>Motion Design</div>
                     </div>
                     <div>
                       <div style={{ fontSize: 'var(--text-2xl)', fontWeight: 700, fontFamily: 'var(--font-display)' }}>
@@ -449,8 +459,46 @@ export default function ProjectPage() {
                     <span className="text-sm text-secondary">Langue</span>
                     <span className="text-sm font-semibold">{transcription?.language?.toUpperCase() || '—'}</span>
                   </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-secondary">Motion Design</span>
+                    <span className="text-sm font-semibold">{motionDesignEnabled ? '✓ Activé' : '✗ Désactivé'}</span>
+                  </div>
                 </div>
               </div>
+
+              {/* Motion Design Toggle — visible for restart */}
+              {(project.status === 'queued' || project.status === 'failed' || project.status === 'completed') && (
+                <div className="card" style={{ padding: 'var(--space-4)', marginTop: 'var(--space-4)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                      <span style={{ fontSize: 18 }}>{motionDesignEnabled ? '🎬' : '📹'}</span>
+                      <div>
+                        <div className="text-sm font-semibold">
+                          {motionDesignEnabled ? 'Motion Design' : 'Mode Standard'}
+                        </div>
+                        <div className="text-xs text-secondary">
+                          {motionDesignEnabled ? 'Animations IA activées' : 'Sans motion design'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setMotionDesignEnabled(!motionDesignEnabled)}
+                      className="btn btn-sm"
+                      style={{
+                        minWidth: 56,
+                        background: motionDesignEnabled ? 'var(--accent-violet)' : 'var(--bg-tertiary)',
+                        color: motionDesignEnabled ? '#fff' : 'var(--text-secondary)',
+                        border: motionDesignEnabled ? '1px solid var(--accent-violet)' : '1px solid var(--border-primary)',
+                        fontWeight: 600,
+                        fontSize: 'var(--text-xs)',
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      {motionDesignEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* EDL Summary */}
               {edl?.summary && (

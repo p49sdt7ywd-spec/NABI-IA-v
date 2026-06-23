@@ -140,12 +140,12 @@ async def generate_motion_clips(
 
     if not motion_segments:
         if on_progress:
-            await on_progress("images", 100, "Aucun motion design requis")
+            await on_progress("motion_design", 100, "Aucun motion design requis")
         return []
 
     total = len(motion_segments)
     if on_progress:
-        await on_progress("images", 5, f"Création de {total} clips motion design...")
+        await on_progress("motion_design", 5, f"Création de {total} clips motion design...")
 
     # Check HyperFrames availability
     hf_available = await _check_hyperframes() if mode == "hyperframes" else False
@@ -165,7 +165,7 @@ async def generate_motion_clips(
 
         if on_progress:
             pct = 5 + int((idx / total) * 85)
-            await on_progress("images", pct, f"Motion design {idx + 1}/{total} — LLM génère le HTML...")
+            await on_progress("motion_design", pct, f"Motion design {idx + 1}/{total} — LLM génère le HTML...")
 
         clip_dir = motion_dir / f"clip_{seg_index:03d}"
         clip_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +188,7 @@ async def generate_motion_clips(
             if hf_available:
                 if on_progress:
                     pct = 5 + int(((idx + 0.6) / total) * 85)
-                    await on_progress("images", pct, f"Motion design {idx + 1}/{total} — HyperFrames render...")
+                    await on_progress("motion_design", pct, f"Motion design {idx + 1}/{total} — HyperFrames render...")
 
                 video_path = await _render_with_hyperframes(clip_dir, html_path)
             else:
@@ -209,7 +209,7 @@ async def generate_motion_clips(
 
             if on_progress:
                 pct = 5 + int(((idx + 1) / total) * 85)
-                await on_progress("images", pct, f"Motion design {idx + 1}/{total} ✓ ({gen_time}s)")
+                await on_progress("motion_design", pct, f"Motion design {idx + 1}/{total} ✓ ({gen_time}s)")
 
         except Exception as e:
             print(f"⚠️ Motion design failed for segment {seg_index}: {e}")
@@ -243,7 +243,7 @@ async def generate_motion_clips(
     if on_progress:
         mode_label = "HyperFrames" if hf_available else "Pillow (fallback)"
         ok_count = sum(1 for r in results if r.get("video_path") or r.get("image_path"))
-        await on_progress("images", 100, f"✓ {ok_count}/{total} clips motion design ({mode_label})")
+        await on_progress("motion_design", 100, f"✓ {ok_count}/{total} clips motion design ({mode_label})")
 
     return results
 

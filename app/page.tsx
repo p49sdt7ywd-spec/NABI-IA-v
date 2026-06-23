@@ -23,6 +23,7 @@ export default function Dashboard() {
   const [uploadedFileName, setUploadedFileName] = useState('');
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [backendOnline, setBackendOnline] = useState(false);
+  const [motionDesignEnabled, setMotionDesignEnabled] = useState(true);
 
   // Load projects and health on mount
   useEffect(() => {
@@ -69,8 +70,8 @@ export default function Dashboard() {
       clearInterval(progressInterval);
       setUploadProgress(100);
 
-      // Start processing immediately
-      await startProcessing(project.id);
+      // Start processing immediately with motion design preference
+      await startProcessing(project.id, { motion_design_enabled: motionDesignEnabled });
 
       setTimeout(() => {
         setIsUploading(false);
@@ -191,6 +192,52 @@ export default function Dashboard() {
               uploadProgress={uploadProgress}
               uploadedFileName={uploadedFileName}
             />
+
+            {/* Motion Design Toggle */}
+            <div
+              className="card"
+              style={{
+                marginTop: 'var(--space-4)',
+                padding: 'var(--space-4)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                <span style={{ fontSize: 22 }}>{motionDesignEnabled ? '🎬' : '📹'}</span>
+                <div>
+                  <div className="font-semibold text-sm">
+                    {motionDesignEnabled ? 'Mode Motion Design' : 'Mode Standard'}
+                  </div>
+                  <div className="text-xs text-secondary">
+                    {motionDesignEnabled
+                      ? 'Séquences motion design IA (HyperFrames)'
+                      : 'Montage sans motion design IA'}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setMotionDesignEnabled(!motionDesignEnabled)}
+                className="btn btn-sm"
+                style={{
+                  minWidth: 68,
+                  background: motionDesignEnabled
+                    ? 'var(--accent-violet)'
+                    : 'var(--bg-tertiary)',
+                  color: motionDesignEnabled
+                    ? '#fff'
+                    : 'var(--text-secondary)',
+                  border: motionDesignEnabled
+                    ? '1px solid var(--accent-violet)'
+                    : '1px solid var(--border-primary)',
+                  fontWeight: 600,
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                {motionDesignEnabled ? 'ON' : 'OFF'}
+              </button>
+            </div>
           </div>
 
           {/* Projects List */}

@@ -106,9 +106,16 @@ export async function uploadVideo(file: File): Promise<Project> {
   return res.json();
 }
 
-export async function startProcessing(projectId: string): Promise<void> {
+export async function startProcessing(
+  projectId: string,
+  options?: { motion_design_enabled?: boolean }
+): Promise<void> {
   const res = await fetch(`${API_BASE}/api/process/${projectId}`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      motion_design_enabled: options?.motion_design_enabled ?? true,
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

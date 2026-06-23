@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import aiofiles
@@ -187,7 +187,7 @@ async def upload_video(file: UploadFile = File(...)):
 # ── Processing Pipeline ──────────────────────
 
 @app.post("/api/process/{project_id}")
-async def start_processing(project_id: str):
+async def start_processing(project_id: str, body: dict = Body(default={})):
     """Start the video processing pipeline for a project."""
     project = db.get_project(project_id)
     if not project:
@@ -196,13 +196,16 @@ async def start_processing(project_id: str):
     if project_id in active_tasks and not active_tasks[project_id].done():
         raise HTTPException(status_code=409, detail="Project is already being processed")
     
+    # Extract motion design toggle from request body
+    motion_design_enabled = body.get("motion_design_enabled", True)
+    
     # Start processing in background
-    task = asyncio.create_task(_run_pipeline(project_id))
+    task = asyncio.create_task(_run_pipeline(project_id, motion_design_enabled=motion_design_enabled))
     active_tasks[project_id] = task
     
     db.update_project(project_id, status="processing", progress=0)
     
-    return {"status": "processing", "project_id": project_id}
+    return {"status": "processing", "project_id": project_id, "motion_design_enabled": motion_design_enabled}
 
 
 @app.post("/api/cancel/{project_id}")
@@ -224,15 +227,16 @@ async def cancel_processing(project_id: str):
     raise HTTPException(status_code=404, detail="No active processing for this project")
 
 
-async def _run_pipeline(project_id: str):
+async def _run_pipeline(project_id: str, motion_design_enabled: bool = True):
     """Run the full 5-stage processing pipeline for a project."""
     try:
         project = db.get_project(project_id)
         project_dir = str(db.get_project_dir(project_id))
         video_path = project["source_video_path"]
         
-        # Get settings
+        # Get settings and inject motion design toggle
         settings = db.get_all_settings()
+        settings["motion_design_enabled"] = "true" if motion_design_enabled else "false"
         
         # Create progress callback that also updates DB
         async def on_progress(step: str, progress: float, message: str):
